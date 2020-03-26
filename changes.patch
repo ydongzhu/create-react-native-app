@@ -1,0 +1,521 @@
+From 2ab12cd5db1702ad144f0eadd4a65cd40c470939 Mon Sep 17 00:00:00 2001
+From: Luna Wei <luwe@fb.com>
+Date: Mon, 9 Mar 2020 15:53:19 -0700
+Subject: [PATCH 1/3] Remove all layout index adjustments
+
+Summary:
+Changelog: [Internal]
+
+# Context Timeline
+
+* ~March 2019 landed D14529038 (I'll be referring to this as "index adjustment fix")
+which attempted to fix a reproducible issue with layout animations: P127130177, see Spencer's diff for more context: D14245985
+
+* May 2019 I realized that "index adjustment fix" has a bug in it and attempted to fix with D15485132, but was eventually reverted because of other crashes
+
+* Just recently have been getting tasks related to crashes that are attempting to either remove or add a view that is out of bounds which is caused by invalid index because of the "index adjustment fix".
+
+# What is this diff doing?
+I'm removing the "index adjustment fix" because I found that the original layout animation repro, P127130177, no longer repros on  latest master with the "index adjustment fix" reverted.
+
+Additionally, I've found a consistent crash in (RN bookmark > Sample Integration App > Relay Sample Friends) of a bad view deletion because of the "index adjustment fix"
+
+Removing the index adjustment fix may have effects elsewhere but it seems better to remove this and go back to what layout animations was doing a year ago than to continue on in this half-baked state.
+
+Reviewed By: JoshuaGross
+
+Differential Revision: D20323928
+
+fbshipit-source-id: ba4a222915add00e98a9936ba2a8efc4006fb8e3
+---
+ .../uimanager/NativeViewHierarchyManager.java | 48 ++-----------------
+ .../NativeViewHierarchyOptimizer.java         |  9 ++--
+ .../react/uimanager/UIImplementation.java     |  9 +---
+ .../react/uimanager/UIViewOperationQueue.java | 13 ++---
+ 4 files changed, 12 insertions(+), 67 deletions(-)
+
+diff --git a/node_modules/react-native/ReactAndroid/src/main/java/com/facebook/react/uimanager/NativeViewHierarchyManager.java b/node_modules/react-native/ReactAndroid/src/main/java/com/facebook/react/uimanager/NativeViewHierarchyManager.java
+index bf4908c7c0..669fe42a7f 100644
+--- a/node_modules/react-native/ReactAndroid/src/main/java/com/facebook/react/uimanager/NativeViewHierarchyManager.java
++++ b/node_modules/react-native/ReactAndroid/src/main/java/com/facebook/react/uimanager/NativeViewHierarchyManager.java
+@@ -11,7 +11,6 @@ import android.graphics.Matrix;
+ import android.graphics.RectF;
+ import android.util.SparseArray;
+ import android.util.SparseBooleanArray;
+-import android.util.SparseIntArray;
+ import android.view.Menu;
+ import android.view.MenuItem;
+ import android.view.View;
+@@ -74,7 +73,6 @@ public class NativeViewHierarchyManager {
+   private final JSResponderHandler mJSResponderHandler = new JSResponderHandler();
+   private final RootViewManager mRootViewManager;
+   private final LayoutAnimationController mLayoutAnimator = new LayoutAnimationController();
+-  private final SparseArray<SparseIntArray> mTagsToPendingIndicesToDelete = new SparseArray<>();
+   private final int[] mDroppedViewArray = new int[100];
+   private final RectF mBoundingBox = new RectF();
+ 
+@@ -350,49 +348,20 @@ public class NativeViewHierarchyManager {
+     return stringBuilder.toString();
+   }
+ 
+-  /**
+-   * Given an index to action on under synchronous deletes, return an updated index factoring in
+-   * asynchronous deletes (where the async delete operations have not yet been performed)
+-   */
+-  private int normalizeIndex(int index, SparseIntArray pendingIndices) {
+-    int normalizedIndex = index;
+-    for (int i = 0; i <= index; i++) {
+-      normalizedIndex += pendingIndices.get(i);
+-    }
+-    return normalizedIndex;
+-  }
+-
+-  /**
+-   * Given React tag, return sparse array of direct child indices that are pending deletion (due to
+-   * async view deletion)
+-   */
+-  private SparseIntArray getOrCreatePendingIndicesToDelete(int tag) {
+-    SparseIntArray pendingIndicesToDelete = mTagsToPendingIndicesToDelete.get(tag);
+-    if (pendingIndicesToDelete == null) {
+-      pendingIndicesToDelete = new SparseIntArray();
+-      mTagsToPendingIndicesToDelete.put(tag, pendingIndicesToDelete);
+-    }
+-    return pendingIndicesToDelete;
+-  }
+-
+   /**
+    * @param tag react tag of the node we want to manage
+    * @param indicesToRemove ordered (asc) list of indicies at which view should be removed
+    * @param viewsToAdd ordered (asc based on mIndex property) list of tag-index pairs that represent
+    *     a view which should be added at the specified index
+    * @param tagsToDelete list of tags corresponding to views that should be removed
+-   * @param indicesToDelete parallel list to tagsToDelete, list of indices of those tags
+    */
+   public synchronized void manageChildren(
+       int tag,
+       @Nullable int[] indicesToRemove,
+       @Nullable ViewAtIndex[] viewsToAdd,
+-      @Nullable int[] tagsToDelete,
+-      @Nullable int[] indicesToDelete) {
++      @Nullable int[] tagsToDelete) {
+     UiThreadUtil.assertOnUiThread();
+ 
+-    final SparseIntArray pendingIndicesToDelete = getOrCreatePendingIndicesToDelete(tag);
+-
+     final ViewGroup viewToManage = (ViewGroup) mTagsToViews.get(tag);
+     final ViewGroupManager viewManager = (ViewGroupManager) resolveViewManager(tag);
+     if (viewToManage == null) {
+@@ -445,8 +414,7 @@ public class NativeViewHierarchyManager {
+                       viewToManage, viewManager, indicesToRemove, viewsToAdd, tagsToDelete));
+         }
+ 
+-        int normalizedIndexToRemove = normalizeIndex(indexToRemove, pendingIndicesToDelete);
+-        View viewToRemove = viewManager.getChildAt(viewToManage, normalizedIndexToRemove);
++        View viewToRemove = viewManager.getChildAt(viewToManage, indexToRemove);
+ 
+         if (mLayoutAnimationEnabled
+             && mLayoutAnimator.shouldAnimateLayout(viewToRemove)
+@@ -454,7 +422,7 @@ public class NativeViewHierarchyManager {
+           // The view will be removed and dropped by the 'delete' layout animation
+           // instead, so do nothing
+         } else {
+-          viewManager.removeViewAt(viewToManage, normalizedIndexToRemove);
++          viewManager.removeViewAt(viewToManage, indexToRemove);
+         }
+ 
+         lastIndexToRemove = indexToRemove;
+@@ -464,7 +432,6 @@ public class NativeViewHierarchyManager {
+     if (tagsToDelete != null) {
+       for (int i = 0; i < tagsToDelete.length; i++) {
+         int tagToDelete = tagsToDelete[i];
+-        final int indexToDelete = indicesToDelete[i];
+         final View viewToDestroy = mTagsToViews.get(tagToDelete);
+         if (viewToDestroy == null) {
+           throw new IllegalViewOperationException(
+@@ -476,8 +443,6 @@ public class NativeViewHierarchyManager {
+         }
+ 
+         if (mLayoutAnimationEnabled && mLayoutAnimator.shouldAnimateLayout(viewToDestroy)) {
+-          int updatedCount = pendingIndicesToDelete.get(indexToDelete, 0) + 1;
+-          pendingIndicesToDelete.put(indexToDelete, updatedCount);
+           mLayoutAnimator.deleteView(
+               viewToDestroy,
+               new LayoutAnimationListener() {
+@@ -485,9 +450,6 @@ public class NativeViewHierarchyManager {
+                 public void onAnimationEnd() {
+                   viewManager.removeView(viewToManage, viewToDestroy);
+                   dropView(viewToDestroy);
+-
+-                  int count = pendingIndicesToDelete.get(indexToDelete, 0);
+-                  pendingIndicesToDelete.put(indexToDelete, Math.max(0, count - 1));
+                 }
+               });
+         } else {
+@@ -508,8 +470,7 @@ public class NativeViewHierarchyManager {
+                   + constructManageChildrenErrorMessage(
+                       viewToManage, viewManager, indicesToRemove, viewsToAdd, tagsToDelete));
+         }
+-        int normalizedIndexToAdd = normalizeIndex(viewAtIndex.mIndex, pendingIndicesToDelete);
+-        viewManager.addView(viewToManage, viewToAdd, normalizedIndexToAdd);
++        viewManager.addView(viewToManage, viewToAdd, viewAtIndex.mIndex);
+       }
+     }
+   }
+@@ -619,7 +580,6 @@ public class NativeViewHierarchyManager {
+       }
+       viewGroupManager.removeAllViews(viewGroup);
+     }
+-    mTagsToPendingIndicesToDelete.remove(view.getId());
+     mTagsToViews.remove(view.getId());
+     mTagsToViewManagers.remove(view.getId());
+   }
+diff --git a/node_modules/react-native/ReactAndroid/src/main/java/com/facebook/react/uimanager/NativeViewHierarchyOptimizer.java b/node_modules/react-native/ReactAndroid/src/main/java/com/facebook/react/uimanager/NativeViewHierarchyOptimizer.java
+index 338d909399..e68b36eaf1 100644
+--- a/node_modules/react-native/ReactAndroid/src/main/java/com/facebook/react/uimanager/NativeViewHierarchyOptimizer.java
++++ b/node_modules/react-native/ReactAndroid/src/main/java/com/facebook/react/uimanager/NativeViewHierarchyOptimizer.java
+@@ -140,12 +140,11 @@ public class NativeViewHierarchyOptimizer {
+       int[] indicesToRemove,
+       int[] tagsToRemove,
+       ViewAtIndex[] viewsToAdd,
+-      int[] tagsToDelete,
+-      int[] indicesToDelete) {
++      int[] tagsToDelete) {
+     if (!ENABLED) {
+       assertNodeSupportedWithoutOptimizer(nodeToManage);
+       mUIViewOperationQueue.enqueueManageChildren(
+-          nodeToManage.getReactTag(), indicesToRemove, viewsToAdd, tagsToDelete, indicesToDelete);
++          nodeToManage.getReactTag(), indicesToRemove, viewsToAdd, tagsToDelete);
+       return;
+     }
+ 
+@@ -283,8 +282,7 @@ public class NativeViewHierarchyOptimizer {
+           nativeNodeToRemoveFrom.getReactTag(),
+           new int[] {index},
+           null,
+-          shouldDelete ? new int[] {nodeToRemove.getReactTag()} : null,
+-          shouldDelete ? new int[] {index} : null);
++          shouldDelete ? new int[] {nodeToRemove.getReactTag()} : null);
+     }
+   }
+ 
+@@ -299,7 +297,6 @@ public class NativeViewHierarchyOptimizer {
+         parent.getReactTag(),
+         null,
+         new ViewAtIndex[] {new ViewAtIndex(child.getReactTag(), index)},
+-        null,
+         null);
+ 
+     if (child.getNativeKind() != NativeKind.PARENT) {
+diff --git a/node_modules/react-native/ReactAndroid/src/main/java/com/facebook/react/uimanager/UIImplementation.java b/node_modules/react-native/ReactAndroid/src/main/java/com/facebook/react/uimanager/UIImplementation.java
+index 5ddbe5c08b..6f09467276 100644
+--- a/node_modules/react-native/ReactAndroid/src/main/java/com/facebook/react/uimanager/UIImplementation.java
++++ b/node_modules/react-native/ReactAndroid/src/main/java/com/facebook/react/uimanager/UIImplementation.java
+@@ -332,7 +332,6 @@ public class UIImplementation {
+       int[] indicesToRemove = new int[numToMove + numToRemove];
+       int[] tagsToRemove = new int[indicesToRemove.length];
+       int[] tagsToDelete = new int[numToRemove];
+-      int[] indicesToDelete = new int[numToRemove];
+ 
+       if (numToMove > 0) {
+         Assertions.assertNotNull(moveFrom);
+@@ -364,7 +363,6 @@ public class UIImplementation {
+           indicesToRemove[numToMove + i] = indexToRemove;
+           tagsToRemove[numToMove + i] = tagToRemove;
+           tagsToDelete[i] = tagToRemove;
+-          indicesToDelete[i] = indexToRemove;
+         }
+       }
+ 
+@@ -404,12 +402,7 @@ public class UIImplementation {
+       }
+ 
+       mNativeViewHierarchyOptimizer.handleManageChildren(
+-          cssNodeToManage,
+-          indicesToRemove,
+-          tagsToRemove,
+-          viewsToAdd,
+-          tagsToDelete,
+-          indicesToDelete);
++          cssNodeToManage, indicesToRemove, tagsToRemove, viewsToAdd, tagsToDelete);
+ 
+       for (int i = 0; i < tagsToDelete.length; i++) {
+         removeShadowNode(mShadowNodeRegistry.getNode(tagsToDelete[i]));
+diff --git a/node_modules/react-native/ReactAndroid/src/main/java/com/facebook/react/uimanager/UIViewOperationQueue.java b/node_modules/react-native/ReactAndroid/src/main/java/com/facebook/react/uimanager/UIViewOperationQueue.java
+index abbe9c3f83..6f4531f074 100644
+--- a/node_modules/react-native/ReactAndroid/src/main/java/com/facebook/react/uimanager/UIViewOperationQueue.java
++++ b/node_modules/react-native/ReactAndroid/src/main/java/com/facebook/react/uimanager/UIViewOperationQueue.java
+@@ -185,25 +185,22 @@ public class UIViewOperationQueue {
+     private final @Nullable int[] mIndicesToRemove;
+     private final @Nullable ViewAtIndex[] mViewsToAdd;
+     private final @Nullable int[] mTagsToDelete;
+-    private final @Nullable int[] mIndicesToDelete;
+ 
+     public ManageChildrenOperation(
+         int tag,
+         @Nullable int[] indicesToRemove,
+         @Nullable ViewAtIndex[] viewsToAdd,
+-        @Nullable int[] tagsToDelete,
+-        @Nullable int[] indicesToDelete) {
++        @Nullable int[] tagsToDelete) {
+       super(tag);
+       mIndicesToRemove = indicesToRemove;
+       mViewsToAdd = viewsToAdd;
+       mTagsToDelete = tagsToDelete;
+-      mIndicesToDelete = indicesToDelete;
+     }
+ 
+     @Override
+     public void execute() {
+       mNativeViewHierarchyManager.manageChildren(
+-          mTag, mIndicesToRemove, mViewsToAdd, mTagsToDelete, mIndicesToDelete);
++          mTag, mIndicesToRemove, mViewsToAdd, mTagsToDelete);
+     }
+   }
+ 
+@@ -672,11 +669,9 @@ public class UIViewOperationQueue {
+       int reactTag,
+       @Nullable int[] indicesToRemove,
+       @Nullable ViewAtIndex[] viewsToAdd,
+-      @Nullable int[] tagsToDelete,
+-      @Nullable int[] indicesToDelete) {
++      @Nullable int[] tagsToDelete) {
+     mOperations.add(
+-        new ManageChildrenOperation(
+-            reactTag, indicesToRemove, viewsToAdd, tagsToDelete, indicesToDelete));
++        new ManageChildrenOperation(reactTag, indicesToRemove, viewsToAdd, tagsToDelete));
+   }
+ 
+   public void enqueueSetChildren(int reactTag, ReadableArray childrenTags) {
+-- 
+2.22.0
+
+
+From 477843cf5eee3f3cf1227c0cdc700a38705b68e7 Mon Sep 17 00:00:00 2001
+From: Luna Wei <luwe@fb.com>
+Date: Mon, 9 Mar 2020 15:53:19 -0700
+Subject: [PATCH 2/3] Track animations and flush them
+
+Summary:
+Changelog: [Internal]
+
+Track delete animations and when `manageChildren` is called on a certain view tag, finish all pending deletion animations before manipulating children
+
+Reviewed By: JoshuaGross
+
+Differential Revision: D20319824
+
+fbshipit-source-id: b594d0e6e9b6fecc5eca2938f284be631494e55c
+---
+ .../uimanager/NativeViewHierarchyManager.java |  3 ++
+ .../LayoutAnimationController.java            | 41 ++++++++++++++++++-
+ 2 files changed, 43 insertions(+), 1 deletion(-)
+
+diff --git a/node_modules/react-native/ReactAndroid/src/main/java/com/facebook/react/uimanager/NativeViewHierarchyManager.java b/node_modules/react-native/ReactAndroid/src/main/java/com/facebook/react/uimanager/NativeViewHierarchyManager.java
+index 669fe42a7f..830dd0e366 100644
+--- a/node_modules/react-native/ReactAndroid/src/main/java/com/facebook/react/uimanager/NativeViewHierarchyManager.java
++++ b/node_modules/react-native/ReactAndroid/src/main/java/com/facebook/react/uimanager/NativeViewHierarchyManager.java
+@@ -362,6 +362,8 @@ public class NativeViewHierarchyManager {
+       @Nullable int[] tagsToDelete) {
+     UiThreadUtil.assertOnUiThread();
+ 
++    mLayoutAnimator.cancelAnimationsForViewTag(tag);
++
+     final ViewGroup viewToManage = (ViewGroup) mTagsToViews.get(tag);
+     final ViewGroupManager viewManager = (ViewGroupManager) resolveViewManager(tag);
+     if (viewToManage == null) {
+@@ -444,6 +446,7 @@ public class NativeViewHierarchyManager {
+ 
+         if (mLayoutAnimationEnabled && mLayoutAnimator.shouldAnimateLayout(viewToDestroy)) {
+           mLayoutAnimator.deleteView(
++              tag,
+               viewToDestroy,
+               new LayoutAnimationListener() {
+                 @Override
+diff --git a/node_modules/react-native/ReactAndroid/src/main/java/com/facebook/react/uimanager/layoutanimation/LayoutAnimationController.java b/node_modules/react-native/ReactAndroid/src/main/java/com/facebook/react/uimanager/layoutanimation/LayoutAnimationController.java
+index 55c3bea2ca..9192d2758d 100644
+--- a/node_modules/react-native/ReactAndroid/src/main/java/com/facebook/react/uimanager/layoutanimation/LayoutAnimationController.java
++++ b/node_modules/react-native/ReactAndroid/src/main/java/com/facebook/react/uimanager/layoutanimation/LayoutAnimationController.java
+@@ -15,6 +15,7 @@ import androidx.annotation.Nullable;
+ import com.facebook.react.bridge.Callback;
+ import com.facebook.react.bridge.ReadableMap;
+ import com.facebook.react.bridge.UiThreadUtil;
++import java.util.ArrayList;
+ import javax.annotation.concurrent.NotThreadSafe;
+ 
+ /**
+@@ -29,6 +30,8 @@ public class LayoutAnimationController {
+   private final AbstractLayoutAnimation mLayoutUpdateAnimation = new LayoutUpdateAnimation();
+   private final AbstractLayoutAnimation mLayoutDeleteAnimation = new LayoutDeleteAnimation();
+   private final SparseArray<LayoutHandlingAnimation> mLayoutHandlers = new SparseArray<>(0);
++  private final SparseArray<ArrayList<Animation>> mDeleteAnimationsByParentTag =
++      new SparseArray<>();
+ 
+   private boolean mShouldAnimateLayout;
+   private long mMaxAnimationDuration = -1;
+@@ -108,6 +111,7 @@ public class LayoutAnimationController {
+ 
+     // Update an ongoing animation if possible, otherwise the layout update would be ignored as
+     // the existing animation would still animate to the old layout.
++    // Note the view is already inserted into the view hierarchy.
+     LayoutHandlingAnimation existingAnimation = mLayoutHandlers.get(reactTag);
+     if (existingAnimation != null) {
+       existingAnimation.onLayoutUpdate(x, y, width, height);
+@@ -159,11 +163,14 @@ public class LayoutAnimationController {
+    * Animate a view deletion using the layout animation configuration supplied during
+    * initialization.
+    *
++   * @param parentReactTag tag of parent view of @param view. used to associate animation with for
++   *     canceling
+    * @param view The view to animate.
+    * @param listener Called once the animation is finished, should be used to completely remove the
+    *     view.
+    */
+-  public void deleteView(final View view, final LayoutAnimationListener listener) {
++  public void deleteView(
++      final int parentReactTag, final View view, final LayoutAnimationListener listener) {
+     UiThreadUtil.assertOnUiThread();
+ 
+     Animation animation =
+@@ -183,6 +190,10 @@ public class LayoutAnimationController {
+ 
+             @Override
+             public void onAnimationEnd(Animation anim) {
++              ArrayList<Animation> animations = mDeleteAnimationsByParentTag.get(parentReactTag);
++              if (animations != null) {
++                animations.remove(anim);
++              }
+               listener.onAnimationEnd();
+             }
+           });
+@@ -193,7 +204,16 @@ public class LayoutAnimationController {
+         mMaxAnimationDuration = animationDuration;
+       }
+ 
++      // Update our tracking list of delete animations
++      ArrayList<Animation> deleteAnimations = mDeleteAnimationsByParentTag.get(parentReactTag);
++      if (deleteAnimations == null) {
++        deleteAnimations = new ArrayList<>();
++        mDeleteAnimationsByParentTag.put(parentReactTag, deleteAnimations);
++      }
++      deleteAnimations.add(animation);
++
+       view.startAnimation(animation);
++
+     } else {
+       listener.onAnimationEnd();
+     }
+@@ -220,4 +240,23 @@ public class LayoutAnimationController {
+       sCompletionHandler.postDelayed(mCompletionRunnable, delayMillis);
+     }
+   }
++
++  /**
++   * Animate a view deletion using the layout animation configuration supplied during
++   * initialization.
++   *
++   * @param viewTag tag of parent view that we're going to cancel all child animations.
++   */
++  public void cancelAnimationsForViewTag(int viewTag) {
++    ArrayList<Animation> animations = mDeleteAnimationsByParentTag.get(viewTag);
++    if (animations == null) {
++      return;
++    }
++
++    for (int i = 0; i < animations.size(); i++) {
++      animations.get(i).cancel();
++    }
++
++    mDeleteAnimationsByParentTag.remove(viewTag);
++  }
+ }
+-- 
+2.22.0
+
+
+From faebb91f6f8dc7a2611aa7c19afcb3502679e8ad Mon Sep 17 00:00:00 2001
+From: Luna Wei <luwe@fb.com>
+Date: Mon, 9 Mar 2020 18:25:18 -0700
+Subject: [PATCH 3/3] Adjust Layout Animation with pending deletion set
+
+Summary:
+Changelog: [Internal]
+This solves the problem of viewToAdd indices being invalid if the deletes are asynchronous within the scope of one `manageChildren` call.
+
+Since deletions are performed first, we keep a set of tags being deleted.
+During view insertion, we iterate through and filter those tags out of our count.
+
+Reviewed By: JoshuaGross
+
+Differential Revision: D20324643
+
+fbshipit-source-id: 150230428fcd65b8c43cc1f2331e9ce02d31fff9
+---
+ .../uimanager/NativeViewHierarchyManager.java | 24 ++++++++++++++++++-
+ 1 file changed, 23 insertions(+), 1 deletion(-)
+
+diff --git a/node_modules/react-native/ReactAndroid/src/main/java/com/facebook/react/uimanager/NativeViewHierarchyManager.java b/node_modules/react-native/ReactAndroid/src/main/java/com/facebook/react/uimanager/NativeViewHierarchyManager.java
+index 830dd0e366..29e4683fd3 100644
+--- a/node_modules/react-native/ReactAndroid/src/main/java/com/facebook/react/uimanager/NativeViewHierarchyManager.java
++++ b/node_modules/react-native/ReactAndroid/src/main/java/com/facebook/react/uimanager/NativeViewHierarchyManager.java
+@@ -34,6 +34,8 @@ import com.facebook.react.uimanager.layoutanimation.LayoutAnimationListener;
+ import com.facebook.systrace.Systrace;
+ import com.facebook.systrace.SystraceMessage;
+ import java.util.Arrays;
++import java.util.HashSet;
++import java.util.Set;
+ import javax.annotation.concurrent.NotThreadSafe;
+ 
+ /**
+@@ -362,6 +364,7 @@ public class NativeViewHierarchyManager {
+       @Nullable int[] tagsToDelete) {
+     UiThreadUtil.assertOnUiThread();
+ 
++    final Set<Integer> pendingDeletionTags = new HashSet<>();
+     mLayoutAnimator.cancelAnimationsForViewTag(tag);
+ 
+     final ViewGroup viewToManage = (ViewGroup) mTagsToViews.get(tag);
+@@ -445,6 +448,7 @@ public class NativeViewHierarchyManager {
+         }
+ 
+         if (mLayoutAnimationEnabled && mLayoutAnimator.shouldAnimateLayout(viewToDestroy)) {
++          pendingDeletionTags.add(tagToDelete);
+           mLayoutAnimator.deleteView(
+               tag,
+               viewToDestroy,
+@@ -453,6 +457,7 @@ public class NativeViewHierarchyManager {
+                 public void onAnimationEnd() {
+                   viewManager.removeView(viewToManage, viewToDestroy);
+                   dropView(viewToDestroy);
++                  pendingDeletionTags.remove(viewToDestroy.getId());
+                 }
+               });
+         } else {
+@@ -473,7 +478,24 @@ public class NativeViewHierarchyManager {
+                   + constructManageChildrenErrorMessage(
+                       viewToManage, viewManager, indicesToRemove, viewsToAdd, tagsToDelete));
+         }
+-        viewManager.addView(viewToManage, viewToAdd, viewAtIndex.mIndex);
++
++        int normalizedIndex = viewAtIndex.mIndex;
++        if (!pendingDeletionTags.isEmpty()) {
++          normalizedIndex = 0;
++          int counter = 0;
++          while (normalizedIndex < viewToManage.getChildCount()) {
++            if (counter == viewAtIndex.mIndex) {
++              break;
++            }
++            View v = viewToManage.getChildAt(normalizedIndex);
++            if (!pendingDeletionTags.contains(v.getId())) {
++              counter++;
++            }
++            normalizedIndex++;
++          }
++        }
++
++        viewManager.addView(viewToManage, viewToAdd, normalizedIndex);
+       }
+     }
+   }
+-- 
+2.22.0
+

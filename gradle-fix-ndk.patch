@@ -1,0 +1,100 @@
+From 2c307e57bcd97febf2df63da83faca83aa660e6d Mon Sep 17 00:00:00 2001
+From: Dulmandakh <dulmandakh@gmail.com>
+Date: Wed, 18 Sep 2019 02:32:52 -0700
+Subject: [PATCH] lazy configure ReactAndroid gradle tasks (#26314)
+
+Summary:
+ReactAndroid Gradle was failing mysteriously with error below, because it was trying to read values from **android** when it wasn't configured completely.
+
+```java
+extensionSupplier.get()!!.compileSdkVersion must not be null
+```
+
+or
+
+```java
+compileSdkVersion is not specified.
+```
+
+It is happening because **buildReactNdkLib** task was created and configured eagerly. So this PR changes some tasks to be configured lazily, and reads values from **android** when ready. Also remove ANDROID_NDK variable check because android gradle plugin doing it automatically.
+
+## Changelog
+
+[Android] [Changed] - lazily configure ReactAndroid gradle tasks
+Pull Request resolved: https://github.com/facebook/react-native/pull/26314
+
+Test Plan: ./gradlew ReactAndroid:tasks run without errors, while master throws exception.
+
+Differential Revision: D17177945
+
+Pulled By: cpojer
+
+fbshipit-source-id: c7a165092157d2059f946da70b801d1a475d4b8c
+---
+ ReactAndroid/build.gradle | 19 +++++++++++--------
+ 1 file changed, 11 insertions(+), 8 deletions(-)
+
+diff --git a/node_modules/react-native/ReactAndroid/build.gradle b/node_modules/react-native/ReactAndroid/build.gradle
+index 3a155afa14..e0a6a4e270 100644
+--- a/node_modules/react-native/ReactAndroid/build.gradle
++++ b/node_modules/react-native/ReactAndroid/build.gradle
+@@ -210,14 +210,14 @@ def findNdkBuildFullPath() {
+         def ndkDir = property("ndk.path")
+         return new File(ndkDir, getNdkBuildName()).getAbsolutePath()
+     }
++
+     if (System.getenv("ANDROID_NDK") != null) {
+         def ndkDir = System.getenv("ANDROID_NDK")
+         return new File(ndkDir, getNdkBuildName()).getAbsolutePath()
+     }
+-    def ndkDir = android.hasProperty("plugin") ? android.plugin.ndkFolder :
+-            plugins.getPlugin("com.android.library").hasProperty("sdkHandler") ?
+-                    plugins.getPlugin("com.android.library").sdkHandler.getNdkFolder() :
+-                    android.ndkDirectory ? android.ndkDirectory.absolutePath : null
++
++    def ndkDir = android.ndkDirectory ? android.ndkDirectory.absolutePath : null
++
+     if (ndkDir) {
+         return new File(ndkDir, getNdkBuildName()).getAbsolutePath()
+     }
+@@ -253,7 +253,8 @@ def getNdkBuildFullPath() {
+     return ndkBuildFullPath
+ }
+ 
+-task buildReactNdkLib(dependsOn: [prepareJSC, prepareHermes, prepareBoost, prepareDoubleConversion, prepareFolly, prepareGlog], type: Exec) {
++def buildReactNdkLib = tasks.register("buildReactNdkLib", Exec) {
++    dependsOn(prepareJSC, prepareHermes, prepareBoost, prepareDoubleConversion, prepareFolly, prepareGlog)
+     inputs.dir("$projectDir/../ReactCommon")
+     inputs.dir("src/main/jni")
+     inputs.dir("src/main/java/com/facebook/react/modules/blob")
+@@ -272,7 +273,7 @@ task buildReactNdkLib(dependsOn: [prepareJSC, prepareHermes, prepareBoost, prepa
+     )
+ }
+ 
+-task cleanReactNdkLib(type: Exec) {
++def cleanReactNdkLib = tasks.register("cleanReactNdkLib", Exec) {
+     ignoreExitValue(true)
+     errorOutput(new ByteArrayOutputStream())
+     commandLine(getNdkBuildFullPath(),
+@@ -287,14 +288,16 @@ task cleanReactNdkLib(type: Exec) {
+     }
+ }
+ 
+-task packageReactNdkLibs(dependsOn: buildReactNdkLib, type: Copy) {
++def packageReactNdkLibs = tasks.register("packageReactNdkLibs", Copy) {
++    dependsOn(buildReactNdkLib)
+     from("$buildDir/react-ndk/all")
+     into("$buildDir/react-ndk/exported")
+     exclude("**/libjsc.so")
+     exclude("**/libhermes.so")
+ }
+ 
+-task packageReactNdkLibsForBuck(dependsOn: packageReactNdkLibs, type: Copy) {
++def packageReactNdkLibsForBuck = tasks.register("packageReactNdkLibsForBuck", Copy) {
++    dependsOn(packageReactNdkLibs)
+     from("$buildDir/react-ndk/exported")
+     into("src/main/jni/prebuilt/lib")
+ }
+-- 
+2.22.0
+
